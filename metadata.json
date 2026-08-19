@@ -1,0 +1,6 @@
+{
+  "name": "Sorteio Diário de Vagas",
+  "description": "Sistema de sorteio diário de vagas para equipe trabalhista com persistência em SQLite.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
