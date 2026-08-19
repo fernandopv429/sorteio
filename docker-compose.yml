@@ -1,0 +1,27 @@
+services:
+  sorteio-vagas:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sorteio-vagas-sqlite:latest
+    container_name: sorteio-vagas-sqlite
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOST=0.0.0.0
+      - TZ=America/Sao_Paulo
+    volumes:
+      - sorteio_data:/app/data
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  sorteio_data:
+    driver: local
