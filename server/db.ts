@@ -39,7 +39,6 @@ export const SEGMENTS: Segment[] = [
     colorHex: '#CE8A3D',
     vagas: [
       'Auxiliar de Limpeza – Nível Brasil',
-      'Garçom – Nível Brasil',
       'Atendente de Caixa – Nível Brasil',
       'Recepcionista – Nível Brasil',
       'Frentista – Nível Brasil',
