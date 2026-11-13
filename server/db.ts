@@ -27,7 +27,9 @@ export const SEGMENTS: Segment[] = [
       'Vigilante CFTV – Nível Brasil',
       'Vigilante Líder – Nível Brasil',
       'Bombeiro Civil – Nível Brasil',
-      'Zelador – Nível Brasil'
+      'Zelador – Nível Brasil',
+      'Vigilante Motorista de Carro-Forte – Nível Brasil',
+      'Vigilante de Escolta Armada – Nível Brasil'
     ]
   },
   {
@@ -40,7 +42,9 @@ export const SEGMENTS: Segment[] = [
       'Garçom – Nível Brasil',
       'Atendente de Caixa – Nível Brasil',
       'Recepcionista – Nível Brasil',
-      'Frentista – Nível Brasil'
+      'Frentista – Nível Brasil',
+      'Caixa Bancário – Nível Brasil',
+      'Auxiliar de Logística – Nível Brasil'
     ]
   },
   {
