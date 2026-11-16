@@ -18,7 +18,9 @@ import {
   ExternalLink,
   ChevronRight,
   RefreshCw,
-  Info
+  Info,
+  Plus,
+  Trash2
 } from 'lucide-react';
 
 interface SegmentInfo {
@@ -143,6 +145,36 @@ export default function App() {
   const [statsLoading, setStatsLoading] = useState<boolean>(false);
   const [dbModal, setDbModal] = useState<boolean>(false);
   const [statusMessage, setStatusMessage] = useState<{ type: 'error' | 'info'; text: string } | null>(null);
+
+  const [addModal, setAddModal] = useState<{
+    show: boolean;
+    segmento: string;
+    nome: string;
+    codigo: string;
+    applyToTemplate: boolean;
+    error: string;
+    isSubmitting: boolean;
+  }>({
+    show: false,
+    segmento: 'seguranca',
+    nome: '',
+    codigo: '',
+    applyToTemplate: true,
+    error: '',
+    isSubmitting: false
+  });
+
+  const [deleteModal, setDeleteModal] = useState<{
+    show: boolean;
+    vaga: Vaga | null;
+    applyToTemplate: boolean;
+    isSubmitting: boolean;
+  }>({
+    show: false,
+    vaga: null,
+    applyToTemplate: true,
+    isSubmitting: false
+  });
 
   const isToday = viewingKey === todayKey;
 
@@ -393,6 +425,119 @@ export default function App() {
     window.location.href = `/api/export/${viewingKey}`;
   };
 
+  // Next auto-code preview for a segment
+  const getNextCodePreview = (segmentKey: string) => {
+    const seg = SEGMENTS.find((s) => s.key === segmentKey);
+    const prefix = seg ? seg.prefix : 'VAG';
+    let maxNum = 0;
+    (dayData.pool || []).forEach((v) => {
+      if (v.segmento === segmentKey && v.codigo) {
+        const match = v.codigo.match(new RegExp(`^${prefix}-(\\d+)$`, 'i'));
+        if (match) {
+          const n = parseInt(match[1], 10);
+          if (!Number.isNaN(n) && n > maxNum) maxNum = n;
+        }
+      }
+    });
+    return `${prefix}-${String(maxNum + 1).padStart(2, '0')}`;
+  };
+
+  const openAddModal = (segmentKey = 'seguranca') => {
+    setAddModal({
+      show: true,
+      segmento: segmentKey,
+      nome: '',
+      codigo: '',
+      applyToTemplate: true,
+      error: '',
+      isSubmitting: false
+    });
+  };
+
+  const handleAddVacancy = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const cleanName = addModal.nome.trim();
+    if (!cleanName) {
+      setAddModal((prev) => ({ ...prev, error: 'Digite o nome da vaga.' }));
+      return;
+    }
+
+    setAddModal((prev) => ({ ...prev, isSubmitting: true, error: '' }));
+    try {
+      const targetKey = viewingKey || todayKey;
+      const res = await fetch(`/api/day/${targetKey}/vacancies`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          nome: cleanName,
+          segmento: addModal.segmento,
+          codigo: addModal.codigo.trim() || undefined,
+          applyToTemplate: addModal.applyToTemplate
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Erro ao adicionar vaga.');
+      }
+
+      if (data.dayData) {
+        setDayData(data.dayData);
+      } else {
+        await fetchDayData(targetKey);
+      }
+
+      setAddModal((prev) => ({ ...prev, show: false, isSubmitting: false }));
+      setStatusMessage({
+        type: 'info',
+        text: `Vaga "${data.vaga?.codigo || ''} - ${cleanName}" adicionada com sucesso.`
+      });
+    } catch (err: any) {
+      setAddModal((prev) => ({
+        ...prev,
+        isSubmitting: false,
+        error: err.message || 'Erro ao adicionar vaga no SQLite.'
+      }));
+    }
+  };
+
+  const handleDeleteVacancy = async () => {
+    if (!deleteModal.vaga) return;
+    const targetVaga = deleteModal.vaga;
+    setDeleteModal((prev) => ({ ...prev, isSubmitting: true }));
+
+    try {
+      const targetKey = viewingKey || todayKey;
+      const res = await fetch(
+        `/api/day/${targetKey}/vacancies/${encodeURIComponent(targetVaga.id)}?applyToTemplate=${deleteModal.applyToTemplate}`,
+        { method: 'DELETE' }
+      );
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Erro ao excluir vaga.');
+      }
+
+      if (data.dayData) {
+        setDayData(data.dayData);
+      } else {
+        await fetchDayData(targetKey);
+      }
+
+      setDeleteModal({ show: false, vaga: null, applyToTemplate: true, isSubmitting: false });
+      setStatusMessage({
+        type: 'info',
+        text: `Vaga "${targetVaga.codigo} - ${targetVaga.nome}" excluída.`
+      });
+    } catch (err: any) {
+      setDeleteModal({ show: false, vaga: null, applyToTemplate: true, isSubmitting: false });
+      setStatusMessage({
+        type: 'error',
+        text: err.message || 'Erro ao excluir vaga no SQLite.'
+      });
+    }
+  };
+
   // Filtered log
   const filteredLog = useMemo(() => {
     const list = dayData.log || [];
@@ -408,7 +553,7 @@ export default function App() {
 
   const pool = dayData.pool || [];
   const vagasDisponiveis = pool.filter((v) => v.status === 'disponivel').length;
-  const totalVagas = pool.length || 14;
+  const totalVagas = pool.length;
 
   const getSegmentMeta = (key: string) => {
     return SEGMENTS.find((s) => s.key === key) || SEGMENTS[0];
@@ -626,7 +771,9 @@ export default function App() {
 
           {vagasDisponiveis === 0 && isToday && (
             <div className="mt-4 p-3 rounded-lg bg-[#C1503F]/15 border border-[#C1503F]/30 text-[#F0B3AA] text-xs leading-relaxed">
-              As 14 vagas de hoje já foram sorteadas por outros consultores. O pool reabre à 00h00 pelo servidor.
+              {totalVagas === 0
+                ? 'Nenhuma vaga cadastrada no pool de hoje. Adicione novas vagas abaixo para iniciar os sorteios.'
+                : `Todas as ${totalVagas} vagas de hoje já foram sorteadas por outros consultores. O pool reabre à 00h00 pelo servidor.`}
             </div>
           )}
 
@@ -739,15 +886,25 @@ export default function App() {
 
       {/* Segments & Vacancies Grid */}
       <section className="mt-8">
-        <div className="flex items-center justify-between gap-3 mb-4">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
           <div>
             <h2 className="font-serif-fraunces font-semibold text-xl text-[#ECEEF2] m-0">
               Quadro de Vagas por Segmento
             </h2>
             <p className="text-xs text-[#69707F] mt-0.5">
-              14 vagas distribuídas em Segurança, Serviços e Saúde
+              {totalVagas} {totalVagas === 1 ? 'vaga distribuída' : 'vagas distribuídas'} em Segurança, Serviços e Saúde
             </p>
           </div>
+
+          {isToday && (
+            <button
+              onClick={() => openAddModal('seguranca')}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-lg bg-gradient-to-b from-[#E0BC3E] to-[#C9A227] text-[#1A1305] hover:brightness-105 active:translate-y-[1px] transition shadow cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              Adicionar Vaga
+            </button>
+          )}
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4.5">
@@ -769,58 +926,95 @@ export default function App() {
                     />
                     <span>{seg.label}</span>
                   </div>
-                  <span className="font-mono-plex text-xs font-semibold px-2 py-0.5 rounded bg-[#232B38] text-[#9AA3B3] border border-[#2A3240]">
-                    {disponiveis} / {segVagas.length}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono-plex text-xs font-semibold px-2 py-0.5 rounded bg-[#232B38] text-[#9AA3B3] border border-[#2A3240]">
+                      {disponiveis} / {segVagas.length}
+                    </span>
+                    {isToday && (
+                      <button
+                        onClick={() => openAddModal(seg.key)}
+                        title={`Adicionar vaga em ${seg.label}`}
+                        className="p-1 rounded bg-[#232B38] border border-[#2A3240] text-[#9AA3B3] hover:text-[#E0BC3E] hover:border-[#C9A227] transition cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {/* Vacancy cards list */}
                 <div className="space-y-2.5">
-                  {segVagas.map((vaga) => {
-                    const isAvailable = vaga.status === 'disponivel';
+                  {segVagas.length === 0 ? (
+                    <div className="py-6 text-center text-xs font-mono-plex text-[#69707F] border border-dashed border-[#2A3240] rounded-lg">
+                      Nenhuma vaga neste segmento.
+                    </div>
+                  ) : (
+                    segVagas.map((vaga) => {
+                      const isAvailable = vaga.status === 'disponivel';
 
-                    return (
-                      <div
-                        key={vaga.id}
-                        style={{
-                          borderLeftColor: isAvailable ? seg.colorHex : '#2A3240'
-                        }}
-                        className={`relative p-3 rounded-lg border border-[#2A3240] border-l-[3.5px] transition-all overflow-hidden ${
-                          isAvailable
-                            ? 'bg-[#1D2430] hover:border-[#3A4556]'
-                            : 'bg-[#171C24] opacity-80'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-mono-plex text-[0.7rem] text-[#69707F] tracking-wider font-semibold">
-                            {vaga.codigo}
-                          </span>
-                          {!isAvailable && (
-                            <span className="stamp-badge">
-                              Sorteada
-                            </span>
-                          )}
-                        </div>
-
+                      return (
                         <div
-                          className={`text-sm font-medium mt-1 leading-snug ${
-                            isAvailable ? 'text-[#ECEEF2]' : 'text-[#9AA3B3]'
+                          key={vaga.id}
+                          style={{
+                            borderLeftColor: isAvailable ? seg.colorHex : '#2A3240'
+                          }}
+                          className={`group relative p-3 rounded-lg border border-[#2A3240] border-l-[3.5px] transition-all overflow-hidden ${
+                            isAvailable
+                              ? 'bg-[#1D2430] hover:border-[#3A4556]'
+                              : 'bg-[#171C24] opacity-80'
                           }`}
                         >
-                          {vaga.nome}
-                        </div>
-
-                        {!isAvailable && (
-                          <div className="mt-2 pt-2 border-t border-[#2A3240]/40 flex items-center justify-between text-[0.72rem] font-mono-plex text-[#69707F]">
-                            <span className="text-[#9AA3B3] font-medium truncate max-w-[170px]">
-                              {vaga.consultor}
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-mono-plex text-[0.7rem] text-[#69707F] tracking-wider font-semibold">
+                              {vaga.codigo}
                             </span>
-                            <span>{vaga.hora}</span>
+
+                            <div className="flex items-center gap-2">
+                              {!isAvailable && (
+                                <span className="stamp-badge">
+                                  Sorteada
+                                </span>
+                              )}
+                              {isToday && (
+                                <button
+                                  onClick={() =>
+                                    setDeleteModal({
+                                      show: true,
+                                      vaga,
+                                      applyToTemplate: true,
+                                      isSubmitting: false
+                                    })
+                                  }
+                                  title="Excluir vaga"
+                                  aria-label={`Excluir vaga ${vaga.nome}`}
+                                  className="p-1 rounded text-[#69707F] hover:text-[#F0B3AA] hover:bg-[#C1503F]/20 transition cursor-pointer"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
                           </div>
-                        )}
-                      </div>
-                    );
-                  })}
+
+                          <div
+                            className={`text-sm font-medium mt-1 leading-snug ${
+                              isAvailable ? 'text-[#ECEEF2]' : 'text-[#9AA3B3]'
+                            }`}
+                          >
+                            {vaga.nome}
+                          </div>
+
+                          {!isAvailable && (
+                            <div className="mt-2 pt-2 border-t border-[#2A3240]/40 flex items-center justify-between text-[0.72rem] font-mono-plex text-[#69707F]">
+                              <span className="text-[#9AA3B3] font-medium truncate max-w-[170px]">
+                                {vaga.consultor}
+                              </span>
+                              <span>{vaga.hora}</span>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
                 </div>
               </div>
             );
@@ -832,7 +1026,7 @@ export default function App() {
       <footer className="mt-12 text-center text-[#69707F] text-xs font-mono-plex space-y-1">
         <div>Banco de Dados: SQLite / WASM · Fuso Oficial: América/São_Paulo (00h00)</div>
         <div className="text-[0.7rem] text-[#4E82C9]">
-          Total de 14 vagas diárias auditáveis no servidor
+          Total de {totalVagas} {totalVagas === 1 ? 'vaga diária auditável' : 'vagas diárias auditáveis'} no servidor
         </div>
       </footer>
 
@@ -992,7 +1186,7 @@ export default function App() {
               Reiniciar sorteio de {viewingKey}?
             </h3>
             <p className="text-sm text-[#9AA3B3] leading-relaxed">
-              Isso vai devolver todas as 14 vagas de <strong>{viewingKey}</strong> ao estado disponível no banco SQLite e limpar o histórico desse dia para toda a equipe.
+              Isso vai devolver todas as {totalVagas} vagas de <strong>{viewingKey}</strong> ao estado disponível no banco SQLite e limpar o histórico desse dia para toda a equipe.
             </p>
 
             <div className="mt-6 flex gap-3">
@@ -1159,6 +1353,243 @@ export default function App() {
                 className="py-2 px-4 rounded-lg bg-[#232B38] text-sm text-[#ECEEF2] hover:bg-[#2A3240] transition cursor-pointer"
               >
                 Fechar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Add Vacancy */}
+      {addModal.show && (
+        <div
+          className="fixed inset-0 bg-[#06080B]/80 backdrop-blur-xs flex items-center justify-center z-50 p-4 animate-fadeIn"
+          onClick={() => !addModal.isSubmitting && setAddModal((prev) => ({ ...prev, show: false }))}
+        >
+          <div
+            className="bg-[#171C24] border border-[#2A3240] rounded-2xl p-6 max-w-md w-full shadow-2xl animate-scaleUp"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-[#2A3240]">
+              <div>
+                <div className="font-mono-plex text-[0.7rem] tracking-wider uppercase text-[#C9A227] font-semibold">
+                  Gerenciar Pool de Vagas
+                </div>
+                <h3 className="font-serif-fraunces text-xl font-semibold text-[#ECEEF2] m-0 mt-0.5">
+                  Adicionar Nova Vaga
+                </h3>
+              </div>
+              <button
+                onClick={() => !addModal.isSubmitting && setAddModal((prev) => ({ ...prev, show: false }))}
+                className="text-[#9AA3B3] hover:text-[#ECEEF2] font-mono-plex cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleAddVacancy} className="space-y-4 mt-4">
+              <div>
+                <label className="block text-[0.74rem] font-semibold tracking-wider uppercase text-[#9AA3B3] mb-2 font-mono-plex">
+                  Segmento
+                </label>
+                <div className="grid grid-cols-1 gap-2">
+                  {SEGMENTS.map((seg) => {
+                    const active = addModal.segmento === seg.key;
+                    return (
+                      <button
+                        type="button"
+                        key={seg.key}
+                        onClick={() => setAddModal((prev) => ({ ...prev, segmento: seg.key }))}
+                        className={`flex items-center justify-between px-3 py-2 rounded-lg border text-left text-xs transition cursor-pointer ${
+                          active
+                            ? 'bg-[#1D2430] border-[#C9A227] text-[#ECEEF2]'
+                            : 'bg-[#0B0D12] border-[#2A3240] text-[#9AA3B3] hover:border-[#3A4556]'
+                        }`}
+                      >
+                        <span className="flex items-center gap-2 font-medium">
+                          {seg.icon}
+                          {seg.label}
+                        </span>
+                        <span className="font-mono-plex text-[0.68rem] text-[#69707F]">
+                          {seg.prefix}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <label
+                  htmlFor="add-vaga-nome"
+                  className="block text-[0.74rem] font-semibold tracking-wider uppercase text-[#9AA3B3] mb-1.5 font-mono-plex"
+                >
+                  Nome da Vaga
+                </label>
+                <input
+                  id="add-vaga-nome"
+                  type="text"
+                  autoFocus
+                  value={addModal.nome}
+                  onChange={(e) =>
+                    setAddModal((prev) => ({ ...prev, nome: e.target.value, error: '' }))
+                  }
+                  placeholder="Ex.: Auxiliar Administrativo – Nível Brasil"
+                  maxLength={100}
+                  className="w-full px-3.5 py-2.5 rounded-lg border border-[#2A3240] bg-[#0B0D12] text-[#ECEEF2] placeholder-[#69707F] text-sm focus:outline-none focus:border-[#C9A227] transition"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="add-vaga-codigo"
+                  className="block text-[0.74rem] font-semibold tracking-wider uppercase text-[#9AA3B3] mb-1.5 font-mono-plex"
+                >
+                  Código (opcional)
+                </label>
+                <input
+                  id="add-vaga-codigo"
+                  type="text"
+                  value={addModal.codigo}
+                  onChange={(e) =>
+                    setAddModal((prev) => ({ ...prev, codigo: e.target.value.toUpperCase() }))
+                  }
+                  placeholder={`Automático: ${getNextCodePreview(addModal.segmento)}`}
+                  maxLength={20}
+                  className="w-full px-3.5 py-2 rounded-lg border border-[#2A3240] bg-[#0B0D12] text-[#ECEEF2] placeholder-[#69707F] text-xs font-mono-plex focus:outline-none focus:border-[#C9A227] transition"
+                />
+              </div>
+
+              <label className="flex items-start gap-2.5 text-xs text-[#9AA3B3] cursor-pointer select-none pt-1">
+                <input
+                  type="checkbox"
+                  checked={addModal.applyToTemplate}
+                  onChange={(e) =>
+                    setAddModal((prev) => ({ ...prev, applyToTemplate: e.target.checked }))
+                  }
+                  className="mt-0.5 accent-[#C9A227] rounded cursor-pointer"
+                />
+                <span>
+                  Salvar no modelo padrão para os próximos dias (reinicialização da 00h00).
+                </span>
+              </label>
+
+              {addModal.error && (
+                <div className="text-[#F0B3AA] text-xs flex items-center gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                  {addModal.error}
+                </div>
+              )}
+
+              <div className="pt-2 flex gap-3">
+                <button
+                  type="button"
+                  disabled={addModal.isSubmitting}
+                  onClick={() => setAddModal((prev) => ({ ...prev, show: false }))}
+                  className="flex-1 py-2.5 px-3 rounded-lg border border-[#2A3240] text-sm text-[#9AA3B3] hover:text-[#ECEEF2] hover:bg-[#1D2430] transition cursor-pointer disabled:opacity-50"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={addModal.isSubmitting}
+                  className="flex-1 py-2.5 px-3 rounded-lg font-semibold text-sm bg-gradient-to-b from-[#E0BC3E] to-[#C9A227] text-[#1A1305] hover:brightness-105 transition cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1.5"
+                >
+                  {addModal.isSubmitting ? (
+                    <>
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      Salvando…
+                    </>
+                  ) : (
+                    <>
+                      <Plus className="w-4 h-4" />
+                      Adicionar Vaga
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Delete Vacancy Confirmation */}
+      {deleteModal.show && deleteModal.vaga && (
+        <div
+          className="fixed inset-0 bg-[#06080B]/80 backdrop-blur-xs flex items-center justify-center z-50 p-4 animate-fadeIn"
+          onClick={() =>
+            !deleteModal.isSubmitting &&
+            setDeleteModal({ show: false, vaga: null, applyToTemplate: true, isSubmitting: false })
+          }
+        >
+          <div
+            className="bg-[#171C24] border border-[#2A3240] rounded-2xl p-6 max-w-md w-full shadow-2xl animate-scaleUp"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="font-mono-plex text-xs tracking-wider uppercase text-[#C1503F] font-semibold flex items-center gap-1.5">
+              <Trash2 className="w-3.5 h-3.5" />
+              Excluir Vaga
+            </div>
+            <h3 className="font-serif-fraunces text-xl font-semibold text-[#ECEEF2] mt-1 mb-2">
+              Remover vaga do pool?
+            </h3>
+            <div className="p-3 rounded-lg bg-[#0B0D12] border border-[#2A3240] mb-3">
+              <div className="font-mono-plex text-[0.7rem] text-[#9AA3B3]">
+                {deleteModal.vaga.codigo} · {getSegmentMeta(deleteModal.vaga.segmento).label}
+              </div>
+              <div className="text-sm font-medium text-[#ECEEF2] mt-0.5">
+                {deleteModal.vaga.nome}
+              </div>
+            </div>
+
+            {deleteModal.vaga.status === 'sorteada' && (
+              <div className="mb-3 p-2.5 rounded-lg bg-[#C9A227]/15 border border-[#C9A227]/35 text-[#E0BC3E] text-xs">
+                Atenção: esta vaga já foi sorteada hoje por{' '}
+                <strong>{deleteModal.vaga.consultor}</strong> às {deleteModal.vaga.hora}.
+              </div>
+            )}
+
+            <label className="flex items-start gap-2.5 text-xs text-[#9AA3B3] cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={deleteModal.applyToTemplate}
+                onChange={(e) =>
+                  setDeleteModal((prev) => ({ ...prev, applyToTemplate: e.target.checked }))
+                }
+                className="mt-0.5 accent-[#C1503F] rounded cursor-pointer"
+              />
+              <span>
+                Remover também do modelo padrão dos próximos dias (não aparecerá novamente amanhã).
+              </span>
+            </label>
+
+            <div className="mt-6 flex gap-3">
+              <button
+                type="button"
+                disabled={deleteModal.isSubmitting}
+                onClick={() =>
+                  setDeleteModal({ show: false, vaga: null, applyToTemplate: true, isSubmitting: false })
+                }
+                className="flex-1 py-2.5 px-3 rounded-lg border border-[#2A3240] text-sm text-[#9AA3B3] hover:text-[#ECEEF2] hover:bg-[#1D2430] transition cursor-pointer disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={deleteModal.isSubmitting}
+                onClick={handleDeleteVacancy}
+                className="flex-1 py-2.5 px-3 rounded-lg font-semibold text-sm bg-[#C1503F] text-white hover:bg-[#A83E2F] transition cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1.5"
+              >
+                {deleteModal.isSubmitting ? (
+                  <>
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                    Excluindo…
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-4 h-4" />
+                    Excluir Vaga
+                  </>
+                )}
               </button>
             </div>
           </div>

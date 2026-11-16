@@ -167,6 +167,19 @@ function initTables(db: Database) {
       FOREIGN KEY(date_key) REFERENCES days(date_key)
     );
 
+    CREATE TABLE IF NOT EXISTS vacancy_templates (
+      id TEXT PRIMARY KEY,
+      codigo TEXT NOT NULL,
+      nome TEXT NOT NULL,
+      segmento TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS app_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS draw_logs (
       id TEXT PRIMARY KEY,
       date_key TEXT NOT NULL,
@@ -180,6 +193,33 @@ function initTables(db: Database) {
     CREATE INDEX IF NOT EXISTS idx_vacancies_date ON vacancies(date_key);
     CREATE INDEX IF NOT EXISTS idx_logs_date ON draw_logs(date_key);
   `);
+
+  // Seed vacancy_templates once from SEGMENTS if not yet seeded
+  const seededRes = db.exec("SELECT value FROM app_meta WHERE key = 'templates_seeded'");
+  const isSeeded = seededRes.length > 0 && seededRes[0].values.length > 0;
+
+  if (!isSeeded) {
+    const countRes = db.exec('SELECT COUNT(*) FROM vacancy_templates');
+    const tplCount = countRes.length > 0 ? Number(countRes[0].values[0][0]) : 0;
+
+    if (tplCount === 0) {
+      const insertTpl = db.prepare(`
+        INSERT INTO vacancy_templates (id, codigo, nome, segmento, sort_order)
+        VALUES (?, ?, ?, ?, ?)
+      `);
+      let order = 0;
+      SEGMENTS.forEach((seg) => {
+        seg.vagas.forEach((nome, idx) => {
+          const codigo = `${seg.prefix}-${String(idx + 1).padStart(2, '0')}`;
+          const id = `tpl-${seg.key}-${slugify(nome)}`;
+          insertTpl.run([id, codigo, nome, seg.key, order++]);
+        });
+      });
+      insertTpl.free();
+    }
+
+    db.run("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('templates_seeded', '1')");
+  }
 }
 
 export function saveDb(): void {
@@ -224,15 +264,33 @@ export async function ensureDayExists(dateKey: string): Promise<DayData> {
     const now = Date.now();
     db.run('INSERT INTO days (date_key, created_at, updated_at) VALUES (?, ?, ?)', [dateKey, now, now]);
 
-    // Insere as 14 vagas padrão
-    const defaultPool = defaultPoolForDate(dateKey);
+    // Carrega o modelo de vagas do banco (vacancy_templates)
+    const tplStmt = db.prepare(`
+      SELECT id, codigo, nome, segmento, sort_order
+      FROM vacancy_templates
+      ORDER BY sort_order ASC
+    `);
+    const templates: { id: string; codigo: string; nome: string; segmento: string; sort_order: number }[] = [];
+    while (tplStmt.step()) {
+      const row = tplStmt.getAsObject() as any;
+      templates.push({
+        id: row.id,
+        codigo: row.codigo,
+        nome: row.nome,
+        segmento: row.segmento,
+        sort_order: Number(row.sort_order ?? 0)
+      });
+    }
+    tplStmt.free();
+
     const insertVaga = db.prepare(`
       INSERT INTO vacancies (id, date_key, codigo, nome, segmento, status, consultor, hora, ts, sort_order)
       VALUES (?, ?, ?, ?, ?, 'disponivel', NULL, NULL, NULL, ?)
     `);
 
-    defaultPool.forEach((v, idx) => {
-      insertVaga.run([v.id, dateKey, v.codigo, v.nome, v.segmento, idx]);
+    templates.forEach((tpl, idx) => {
+      const vacId = `${dateKey}-${tpl.segmento}-${slugify(tpl.nome)}-${idx}`;
+      insertVaga.run([vacId, dateKey, tpl.codigo, tpl.nome, tpl.segmento, idx]);
     });
     insertVaga.free();
 
@@ -432,6 +490,144 @@ export async function resetDay(dateKey: string): Promise<DayData> {
 
   db.run('UPDATE days SET updated_at = ? WHERE date_key = ?', [now, dateKey]);
 
+  saveDb();
+
+  return getDayData(dateKey);
+}
+
+function getNextCodeForSegment(db: Database, dateKey: string, segmento: string): string {
+  const segInfo = SEGMENTS.find((s) => s.key === segmento);
+  const prefix = segInfo ? segInfo.prefix : 'VAG';
+
+  let maxNum = 0;
+  const extractNum = (codigo: string) => {
+    const match = codigo.match(new RegExp(`^${prefix}-(\\d+)$`, 'i'));
+    if (match) {
+      const n = parseInt(match[1], 10);
+      if (!Number.isNaN(n) && n > maxNum) maxNum = n;
+    }
+  };
+
+  const vacStmt = db.prepare('SELECT codigo FROM vacancies WHERE date_key = :dateKey AND segmento = :seg');
+  vacStmt.bind({ ':dateKey': dateKey, ':seg': segmento });
+  while (vacStmt.step()) {
+    const row = vacStmt.getAsObject() as any;
+    if (row.codigo) extractNum(String(row.codigo));
+  }
+  vacStmt.free();
+
+  const tplStmt = db.prepare('SELECT codigo FROM vacancy_templates WHERE segmento = :seg');
+  tplStmt.bind({ ':seg': segmento });
+  while (tplStmt.step()) {
+    const row = tplStmt.getAsObject() as any;
+    if (row.codigo) extractNum(String(row.codigo));
+  }
+  tplStmt.free();
+
+  return `${prefix}-${String(maxNum + 1).padStart(2, '0')}`;
+}
+
+export async function addVacancy(
+  dateKey: string,
+  input: { nome: string; segmento: string; codigo?: string; applyToTemplate?: boolean }
+): Promise<{ vaga: Vaga; dayData: DayData }> {
+  const db = await getDb();
+  await ensureDayExists(dateKey);
+
+  const cleanName = (input.nome || '').trim();
+  if (!cleanName) {
+    throw new Error('O nome da vaga é obrigatório.');
+  }
+
+  const segInfo = SEGMENTS.find((s) => s.key === input.segmento);
+  if (!segInfo) {
+    throw new Error('Segmento inválido.');
+  }
+
+  const cleanCode = (input.codigo || '').trim().toUpperCase() || getNextCodeForSegment(db, dateKey, segInfo.key);
+
+  // Determine next sort_order
+  const maxOrderRes = db.prepare('SELECT COALESCE(MAX(sort_order), -1) as max_order FROM vacancies WHERE date_key = :dateKey');
+  maxOrderRes.bind({ ':dateKey': dateKey });
+  let nextOrder = 0;
+  if (maxOrderRes.step()) {
+    const row = maxOrderRes.getAsObject() as any;
+    nextOrder = Number(row.max_order ?? -1) + 1;
+  }
+  maxOrderRes.free();
+
+  const now = Date.now();
+  const suffix = `${now.toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
+  const id = `${dateKey}-${segInfo.key}-${slugify(cleanName) || 'vaga'}-${suffix}`;
+
+  db.run(
+    `INSERT INTO vacancies (id, date_key, codigo, nome, segmento, status, consultor, hora, ts, sort_order)
+     VALUES (?, ?, ?, ?, ?, 'disponivel', NULL, NULL, NULL, ?)`,
+    [id, dateKey, cleanCode, cleanName, segInfo.key, nextOrder]
+  );
+
+  if (input.applyToTemplate !== false) {
+    const maxTplRes = db.exec('SELECT COALESCE(MAX(sort_order), -1) FROM vacancy_templates');
+    const nextTplOrder =
+      maxTplRes.length > 0 && maxTplRes[0].values.length > 0
+        ? Number(maxTplRes[0].values[0][0]) + 1
+        : 0;
+    const tplId = `tpl-${segInfo.key}-${slugify(cleanName) || 'vaga'}-${suffix}`;
+    db.run(
+      `INSERT INTO vacancy_templates (id, codigo, nome, segmento, sort_order)
+       VALUES (?, ?, ?, ?, ?)`,
+      [tplId, cleanCode, cleanName, segInfo.key, nextTplOrder]
+    );
+  }
+
+  db.run('UPDATE days SET updated_at = ? WHERE date_key = ?', [now, dateKey]);
+  saveDb();
+
+  const vaga: Vaga = {
+    id,
+    codigo: cleanCode,
+    nome: cleanName,
+    segmento: segInfo.key,
+    status: 'disponivel',
+    consultor: null,
+    hora: null,
+    ts: null
+  };
+
+  const dayData = await getDayData(dateKey);
+  return { vaga, dayData };
+}
+
+export async function deleteVacancy(
+  dateKey: string,
+  vacancyId: string,
+  applyToTemplate = true
+): Promise<DayData> {
+  const db = await getDb();
+  await ensureDayExists(dateKey);
+
+  const findStmt = db.prepare(
+    'SELECT id, codigo, nome, segmento FROM vacancies WHERE id = :id AND date_key = :dateKey'
+  );
+  findStmt.bind({ ':id': vacancyId, ':dateKey': dateKey });
+  const found = findStmt.step() ? (findStmt.getAsObject() as any) : null;
+  findStmt.free();
+
+  if (!found) {
+    throw new Error('Vaga não encontrada.');
+  }
+
+  db.run('DELETE FROM vacancies WHERE id = ? AND date_key = ?', [vacancyId, dateKey]);
+
+  if (applyToTemplate) {
+    db.run(
+      'DELETE FROM vacancy_templates WHERE segmento = ? AND (codigo = ? OR LOWER(nome) = LOWER(?))',
+      [found.segmento, found.codigo, found.nome]
+    );
+  }
+
+  const now = Date.now();
+  db.run('UPDATE days SET updated_at = ? WHERE date_key = ?', [now, dateKey]);
   saveDb();
 
   return getDayData(dateKey);

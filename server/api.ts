@@ -7,6 +7,8 @@ import {
   listAllDays,
   performDraw,
   resetDay,
+  addVacancy,
+  deleteVacancy,
   getStats,
   SEGMENTS
 } from './db';
@@ -83,6 +85,44 @@ router.post('/day/:dateKey/reset', async (req: Request, res: Response) => {
     res.json({ success: true, data });
   } catch (err: any) {
     res.status(500).json({ error: err.message || 'Erro ao reiniciar o dia' });
+  }
+});
+
+// POST /api/day/:dateKey/vacancies
+router.post('/day/:dateKey/vacancies', async (req: Request, res: Response) => {
+  try {
+    const { dateKey } = req.params;
+    const { nome, segmento, codigo, applyToTemplate } = req.body || {};
+
+    if (!nome || !String(nome).trim()) {
+      return res.status(400).json({ error: 'O nome da vaga é obrigatório.' });
+    }
+    if (!segmento) {
+      return res.status(400).json({ error: 'Selecione um segmento para a vaga.' });
+    }
+
+    const result = await addVacancy(dateKey, {
+      nome: String(nome),
+      segmento: String(segmento),
+      codigo: codigo ? String(codigo) : undefined,
+      applyToTemplate: applyToTemplate !== false
+    });
+
+    res.status(201).json({ success: true, ...result });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Erro ao adicionar vaga' });
+  }
+});
+
+// DELETE /api/day/:dateKey/vacancies/:vacancyId
+router.delete('/day/:dateKey/vacancies/:vacancyId', async (req: Request, res: Response) => {
+  try {
+    const { dateKey, vacancyId } = req.params;
+    const applyToTemplate = req.query.applyToTemplate !== 'false';
+    const dayData = await deleteVacancy(dateKey, vacancyId, applyToTemplate);
+    res.json({ success: true, dayData });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Erro ao excluir vaga' });
   }
 });
 
